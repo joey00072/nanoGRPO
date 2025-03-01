@@ -149,12 +149,12 @@ dataset = prepare_dataset(dataset)
 
 group_size = 8
 micro_group_size =2
-lr = 5e-6
+lr = 5e-5
 weight_decay = 0.1
 reward_functions = [
     response_format_reward,
 ]
-
+beta = 0.01
 print(model)
 
 ref_model = None
@@ -168,7 +168,9 @@ trainer = GRPO(
     reward_functions=reward_functions,
     log_wandb=True,
     lr=lr,
-    weight_decay=weight_decay
+    weight_decay=weight_decay,
+    beta=beta,
+    dtype=torch.bfloat16
 )
 
 trainer.train()
