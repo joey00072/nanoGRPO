@@ -108,8 +108,11 @@ class GRPO:
             item = next(self.data_loader_iter)
             samples.append(item)
             prompt = item["prompt"]
-            formatted = self.tokenizer.apply_chat_template(prompt, tokenize=False)
-            inputs_texts.append(formatted)
+            messages = [
+                {"role": "user", "content": prompt},
+            ]
+            formatted = self.tokenizer.apply_chat_template(messages, tokenize=False)
+            inputs_texts.append(formatted+"<｜Assistant｜>")
 
         encoded = self.tokenizer(inputs_texts, padding=True, return_tensors="pt")
         input_ids = encoded["input_ids"]

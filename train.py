@@ -42,9 +42,10 @@ def prepare_dataset(dataset) -> Dataset:
 # small models are kind of dumb, they need a little push so using this fine-tuned model
 # source: https://github.com/joey00072/nanoGRPO/blob/master/cold_start/cold_start_finetune.py
 # you can totally use the base model, it will just take longer to converge
-model_name = "joey00072/Llama-3.2-1B-Instruct-cold-start-ft2"
+# model_name = "joey00072/Llama-3.2-1B-Instruct-cold-start-ft2"
 
-# model_name = "unsloth/Llama-3.2-3B-Instruct"
+# model_name = "unsloth/Llama-3.2-1B-Instruct"
+model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 
 model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -144,8 +145,11 @@ def response_format_reward(sample: dict, s: str, *args, **kwargs):
 
 
 
-dataset = load_dataset("openai/gsm8k", "main")["train"]
-dataset = prepare_dataset(dataset)
+# dataset = load_dataset("openai/gsm8k", "main")["train"]
+# dataset = prepare_dataset(dataset)
+from data import PicoThinkingFunctionCalling
+
+dataset = PicoThinkingFunctionCalling()
 
 group_size = 8
 micro_group_size =2
