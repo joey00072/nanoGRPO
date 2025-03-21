@@ -25,7 +25,12 @@ class GRPO:
         lr=5e-6,
         weight_decay=0.0,
         beta=0.0,
-        epsilon=0.1
+        epsilon=0.1,
+        max_tokens=1024,
+        push_to_hub=False,
+        push_checkpoint_name=None,
+        push_interval=16,
+        **kwargs,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
@@ -41,6 +46,12 @@ class GRPO:
         self.dtype = dtype if dtype is not None else (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
         self.beta = beta
         self.epsilon = epsilon
+        self.max_tokens = max_tokens
+        self.push_to_hub = push_to_hub
+        self.push_checkpoint_name = push_checkpoint_name
+        self.push_interval = push_interval
+        
+        
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr,weight_decay=weight_decay)
         assert reward_functions is not None, "Must pass reward_functions"
         self.reward_functions: list = reward_functions
@@ -58,6 +69,8 @@ class GRPO:
 
         self.model.to(self.device).to(dtype)
         self.ref_model.to(self.device).to(dtype)
+        
+        
 
     def get_per_token_logps(self, model, input_ids) -> Tensor:
         logits = model(input_ids=input_ids).logits
@@ -124,7 +137,7 @@ class GRPO:
         samples = [sample for _ in range(self.group_size) for sample in samples]
 
         start_time = time.time()
-        max_new_tokens = 512
+        max_new_tokens = self.max_tokens
         outputs = self.model.generate(
             input_ids.to(self.device),
             # min_new_tokens=512,
@@ -134,10 +147,42 @@ class GRPO:
         )
         end_time = time.time()
         print(f"Time for generation: {end_time - start_time} seconds")
+        
+        ## COLD START PATCH
+        output = "<｜Assistant｜><think>"+(item["text"].split("<think>")[1])
+        output_enc = self.tokenizer.encode(output,return_tensors="pt")[:,1:]
+        # print("Output encoded shape:",output_enc.shape)
 
+        co = torch.cat((encoded["input_ids"],output_enc),dim=-1)
+        # print("Combined shape:",co.shape)
+        self.tokenizer.decode(co.tolist()[0],skip_special_tokens=False)
+
+        def padds(outputs,co):
+            diff = abs(co.shape[1]-outputs.shape[1])
+            
+            if outputs.shape[1] < co.shape[1]:
+                padds = torch.ones(outputs.shape[0],diff,dtype=torch.long)*self.tokenizer.pad_token_id
+                padds = padds.to(outputs.device)
+                outputs = torch.cat((outputs,padds),dim=-1)
+            elif outputs.shape[1] > co.shape[1]:
+                co = torch.cat((co,torch.ones(co.shape[0],diff,dtype=torch.long)*self.tokenizer.pad_token_id),dim=-1)
+            return outputs,co
+
+        outputs,co = padds(outputs,co)
+        outputs[1] = co[0]
+        
+        
         decoded_outputs = self.tokenizer.batch_decode(outputs, skip_special_tokens=False)
         
+        print("+"*20)
+        for output in decoded_outputs:
+            print(output)
+            print("-"*20)
+        print("+"*20)
+        
         rewards = self.compute_rewards(samples,decoded_outputs)
+        rewards = torch.tensor(rewards, dtype=self.dtype).float()
+        print(f"{rewards}")
 
         loss_mask = torch.zeros(outputs.shape, dtype=torch.bool)
 
@@ -145,7 +190,7 @@ class GRPO:
         valid_gen_mask = gen_tokens != self.tokenizer.pad_token_id
         loss_mask[:, prompt_length:] = valid_gen_mask
 
-        return outputs, torch.tensor(rewards, dtype=self.dtype).float(), loss_mask[:, 1:]
+        return outputs, rewards, loss_mask[:, 1:]
 
     def compute_rewards(self,samples, responces) -> list:
         rewards = [[[] for _ in range(self.batch_size)] for _ in range(len(self.reward_functions))]
@@ -265,3 +310,5 @@ class GRPO:
             print(f"iter {idx}  >>> reward: {rewards.mean()}")
             print(f"Total time: {str(datetime.timedelta(seconds=int(time.perf_counter() - start_time)))}")
             self.log_metrics()
+            if self.push_to_hub and idx % self.push_interval == 0:
+                self.model.push_to_hub(self.push_checkpoint_name, commit_message=f"iter {idx}")

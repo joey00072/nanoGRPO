@@ -5,7 +5,8 @@ import torch
 from rich import print
 import math
 from grpo import GRPO
-
+import re
+import json
 
 SYSTEM_PROMPT = "Respond in following format:<thinking>{step by step reasoning}</thinking><answer>{number}</answer>"
 
@@ -60,88 +61,80 @@ model = get_peft_model(model, lora_config)
 model = model.to(torch.bfloat16)
 
 
-def reward_func_len(sample: dict, s: str, *args, **kwargs):
-    return 4 - (len(s)/1000)
 
-def response_format_reward(sample: dict, s: str, *args, **kwargs):
-    # print(sample.keys())
-    correct_template =0
+def reward_func(sample: dict, response: str, *args, **kwargs):
+    
     try:
-        s = s.split("<|eot_id|><|start_header_id|>assistant<|end_header_id|>")[1]
-    except:
-        return -1
-    if "<|eot_id|>" in s:
-        s = s.split("<|eot_id|>")[0]
-    try:
-        print("-"*100)
-        print(s)
-        print("-"*100)
-    except:
-        ...
-    total_reward = 0
-    for tag in ["<thinking>", "</thinking>", "<answer>", "</answer>"]:
-        if tag in s:
-            total_reward+=0.15
-            if s.count(tag)>1:
-                total_reward -= s.count(tag)*0.01
-
-    if s.count("<thinking>")==1:
-        total_reward += .5
-    else:
-        total_reward -= .1
-
-    if s.count("</thinking><answer>")==1:
-        total_reward += 1
-        correct_template += 1
-    else:
-        if s.count("<thinking>")==1:
-            total_reward += .2
+        reward = 0
+        _, resp = response.split("<think>")
+        sp = resp.split("</think>")
+        if len(sp)==2:
+            thinking,answer = sp
         else:
-            total_reward -= .1
-        if s.count("<answer>")==1:
-            total_reward += .2
-        else:
-            total_reward -= .1
+            thinking = sp[0]
+        
+        OPEN_FUNC_CALL = "<function_call>"
+        CLOSE_FUNC_CALL = "</function_call>"
+        OPEN_REQUEST = "<request>"
+        CLOSE_REQUEST = "</request>"
+        OPEN_RESPONSE = "<response>"
+        CLOSE_RESPONSE = "</response>"
 
-    if s.count("</answer>")==1 and s.split("</answer>")[1].strip() == "":
-            total_reward += 1
-    else:
-        total_reward -= 0.1
-
-    if s.count("<answer>")==1:
-        total_reward += .2
-
-        r = s.split("<answer>")[1].strip()
-        if "</answer>" in r:
-            total_reward += .2
-            if r.count("</answer>")==1:
-                total_reward += 2 
-                split = r.split("</answer>")
-                r = split[0].strip()
-                try:
-                    r = float(r)
-                    total_reward += 1
-                    if r == float(sample["answer"]):
-                        total_reward += 2
-                        correct_template += 1
-                except:
-                    total_reward -= 0.1
-
-                if len(split) > 1:
-                    if split[1].strip() != "":
-                        total_reward += 3
-                        correct_template += 1
-                    else:
-                        total_reward -= len(split[1].strip())/1000
-                else:
-                    total_reward -= 0.2
+        func_calls_tags =[OPEN_FUNC_CALL, CLOSE_FUNC_CALL, OPEN_REQUEST, CLOSE_REQUEST, OPEN_RESPONSE, CLOSE_RESPONSE]
+        
+        for tag in func_calls_tags:
+            if tag in thinking:
+                reward += 0.3
+            if tag in answer:
+                reward -= 0.1
+                
+        if thinking.count(OPEN_FUNC_CALL)>0:
+            if thinking.count(OPEN_FUNC_CALL) == thinking.count(CLOSE_FUNC_CALL):
+                reward += 0.3
             else:
-                total_reward -= 0.1
-        else:
-            total_reward -=0.1
-    if correct_template == 3:
-        total_reward += 2
-    return total_reward
+                reward -= 0.1
+            
+        if answer.count(OPEN_FUNC_CALL)>0:
+            if answer.count(OPEN_FUNC_CALL) == answer.count(CLOSE_FUNC_CALL):
+                reward += 0.3
+            else:
+                reward -= 0.1
+                
+        if thinking.count(OPEN_REQUEST)>0:
+            if thinking.count(OPEN_REQUEST) == thinking.count(CLOSE_REQUEST):
+                reward += 0.3
+            else:
+                reward -= 0.1
+                
+
+        pattern = re.compile(
+            r"""
+            <function_call>\s*
+            <request>\s*
+            (.*?)\s*
+            </request>\s*
+            <response>\s*
+            (.*?)\s*
+            </response>\s*
+            </function_call>
+            """, re.VERBOSE | re.IGNORECASE | re.DOTALL
+        )
+        
+        matches = pattern.findall(thinking)
+        valid_count = 0
+        
+        for request_json, response_json in matches:
+            try:
+                json.loads(request_json.strip())
+                json.loads(response_json.strip())
+                valid_count += 1
+            except json.JSONDecodeError:
+                reward -= 0.1
+            
+        return reward + valid_count *2
+    except Exception as e:
+        print(e)
+        return 0
 
 
 
@@ -156,7 +149,7 @@ micro_group_size =2
 lr = 5e-5
 weight_decay = 0.1
 reward_functions = [
-    response_format_reward,
+    reward_func,
 ]
 beta = 0.01
 print(model)
@@ -174,7 +167,10 @@ trainer = GRPO(
     lr=lr,
     weight_decay=weight_decay,
     beta=beta,
-    dtype=torch.bfloat16
+    dtype=torch.bfloat16,
+    push_to_hub=True,
+    push_checkpoint_name="joey00072/pico_thinking_function_calling_grpo",
+    push_interval=16,
 )
 
 trainer.train()
