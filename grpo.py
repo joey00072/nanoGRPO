@@ -142,7 +142,7 @@ class GRPO:
         valid_gen_mask = gen_tokens != self.tokenizer.pad_token_id
         loss_mask[:, prompt_length:] = valid_gen_mask
 
-        return outputs, torch.tensor(rewards, dtype=self.dtype).float(), loss_mask[:, 1:]
+        return outputs, rewards.to(self.dtype).float(), loss_mask[:, 1:]
 
     def compute_rewards(self,samples, responces) -> list:
         rewards = [[[] for _ in range(self.batch_size)] for _ in range(len(self.reward_functions))]
